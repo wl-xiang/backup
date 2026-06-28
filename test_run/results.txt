@@ -1,0 +1,153 @@
+[PASS] T01.1 exit code
+[PASS] T01.2 default prefix = app
+[PASS] T01.3 default log count
+[PASS] T01.4 exactly 1 archive
+[PASS] T02.1 system env BACKUP_PREFIX wins
+[PASS] T03.1 exit code
+[PASS] T03.2 one archive produced
+[PASS] T03.3 one log produced
+[PASS] T04.1 exit code = 1
+[PASS] T04.2 error msg
+[PASS] T04.3 names STOP_CMD
+[PASS] T04.4 exit code = 1
+[PASS] T04.5 names SRC_DIR
+[PASS] T04.6 BACKUP_DIR missing -> 1
+[PASS] T04.7 names BACKUP_DIR
+[PASS] T04.8 START_CMD missing -> 1
+[PASS] T04.9 names START_CMD
+[PASS] T04.10 all missing -> 1
+[PASS] T04.11 STOP_CMD named
+[PASS] T04.12 START_CMD named
+[PASS] T04.13 SRC_DIR named
+[PASS] T04.14 BACKUP_DIR named
+[PASS] T05.1 zero -> 1
+[PASS] T05.2 error msg
+[PASS] T05.3 negative -> 1
+[PASS] T05.4 non-integer -> 1
+[PASS] T05.5 non-int error
+[PASS] T05.6 mixed -> 1
+[PASS] T05.7 leading space -> 1
+[PASS] T05.8 MAX_BACKUPS=1 ok
+[PASS] T06.1 missing src -> 1
+[PASS] T06.2 error msg
+[PASS] T06.3 src is file not dir -> 1
+[PASS] T07.1 exit code
+[PASS] T07.2 backup dir created
+[PASS] T07.3 log dir created
+[PASS] T08.1 exit code
+[PASS] T08.2 archive produced
+[PASS] T08.3 log produced
+[PASS] T08.4 archive has a.txt
+[PASS] T08.5 archive has sub/c.txt
+[PASS] T08.6 log: stopping service
+[PASS] T08.7 log: archive created
+[PASS] T08.8 log: starting service
+[PASS] T08.9 log: completed
+[PASS] T09.1 exit code
+[PASS] T09.2 stop error logged
+[PASS] T09.3 start was attempted (trap)
+[PASS] T09.4 no archive produced
+[PASS] T10.1 mkdir/tar failure path exits non-zero (1)
+[PASS] T10.2 failure logged
+[PASS] T11.1 exit code = 0
+[PASS] T11.2 start warning logged
+[PASS] T11.3 archive saved
+[PASS] T12.1 exactly 3 archives kept
+[PASS] T12.2 oldest pruned
+[PASS] T12.3 second-oldest pruned
+[PASS] T13.1 before_restore retained
+[PASS] T13.2 total files = 3 (2 regular + 1 safety)
+[PASS] T13.3 before_restore count = 1
+[PASS] T14.1 exit code 0
+[PASS] T14.2 exactly 1 archive
+[PASS] T15.1 exit code
+[PASS] T15.2 a.txt restored to original
+[PASS] T15.3 restore log produced
+[PASS] T16.1 exit code
+[PASS] T16.2 a.txt restored
+[PASS] T16.3 before_restore snapshot
+[PASS] T16.4 snapshot has a.txt
+[PASS] T17.1 exit code
+[PASS] T17.2 a.txt NOT restored (still modified)
+[PASS] T17.3 cancellation logged
+[PASS] T18.1 exit code = 0
+[PASS] T18.2 a.txt NOT changed
+[PASS] T18.3 empty input = cancel
+[PASS] T18.4 capital Y (no option) keeps data
+[PASS] T19.1 exit code
+[PASS] T19.2 target dir exists
+[PASS] T19.3 target has a.txt
+[PASS] T19.4 a.txt content
+[PASS] T19.5 --target-dir=val works
+[PASS] T19.6 newloc2 has a.txt
+[PASS] T20.1 exit code
+[PASS] T20.2 envloc has a.txt
+[PASS] T21.1 exit code = 1
+[PASS] T21.2 error msg
+[PASS] T22.1 exit code = 1
+[PASS] T22.2 error msg
+[PASS] T23.1 exit code = 1
+[PASS] T23.2 names BACKUP_DIR
+[PASS] T23.3 names SRC_DIR
+[PASS] T23.4 missing config = 1
+[PASS] T24.1 exit code = 2
+[PASS] T24.2 error msg
+[PASS] T25.1 exit code = 2
+[PASS] T25.2 error msg
+[PASS] T26.1 exit code
+[PASS] T26.2 o1 has a.txt
+[PASS] T27.1 interrupted exit (0)
+[PASS] T27.2 starting service attempted
+[PASS] T28.1 TERM exit (1)
+[FAIL] T28.2 start attempted
+  expected to contain: starting service
+  actual           : [20260628_085634] [INFO] backup run started (timestamp: 20260628_085634)
+[20260628_085634] [INFO] source      : ./src
+[20260628_085634] [INFO] archive     : ./backup/app_backup_20260628_085634.tar.gz
+[20260628_085634] [INFO] log         : ./logs/app_backup_20260628_085634.log
+[20260628_085634] [INFO] stopping service: sleep 5; true
+[PASS] T29.1 HUP exit (1)
+[FAIL] T29.2 start attempted
+  expected to contain: starting service
+  actual           : [20260628_085639] [INFO] backup run started (timestamp: 20260628_085639)
+[20260628_085639] [INFO] source      : ./src
+[20260628_085639] [INFO] archive     : ./backup/app_backup_20260628_085639.tar.gz
+[20260628_085639] [INFO] log         : ./logs/app_backup_20260628_085639.log
+[20260628_085639] [INFO] stopping service: sleep 5; true
+[PASS] T30.1 no start in restore
+[PASS] T31.1 log file contains 'archive created'
+[PASS] T31.2 log file contains 'stopping service'
+[PASS] T32.1 Yes triggers restore
+[PASS] T32.2 a.txt restored
+[PASS] T33.1 exit code
+[PASS] T33.2 src restored
+[PASS] T33.3 before_restore not created
+[PASS] T34.1 corrupt archive handled (rc=1)
+[PASS] T35.1 exit code
+[PASS] T35.2 no double slash in path
+[PASS] T36.1 exit code = 0
+[PASS] T36.2 data not modified
+[PASS] T36.3 cancellation logged
+[PASS] T37.1 exit code
+[PASS] T37.2 snapshot exists
+[PASS] T37.3 snapshot has newsub
+[PASS] T37.4 src/a.txt restored (not PRE_DATA)
+[PASS] T38.1 exit code = 1
+[PASS] T38.2 error msg
+[PASS] T39.1 exit code
+[PASS] T39.2 dest has a.txt
+[PASS] T40.1 exit code 0
+[PASS] T41.1 exit code
+[PASS] T41.2 exactly 1 archive
+[PASS] T42.1 exit code 0
+[PASS] T42.2 archive present
+[PASS] T43.1 three archives
+[PASS] T43.2 sort -r matches mtime newest
+[PASS] T44.1 exit code = 1
+[PASS] T44.2 reports BACKUP_DIR
+[PASS] T45.1 exit code 0
+[PASS] T45.2 data restored
+
+Total : 137
+Pass  : 135
+Fail  : 2

@@ -1,0 +1,7 @@
+Script line summary:
+  Total lines    : 347
+  Executable     : 241
+  Comments/blank : 106
+Lines hit (unique): 0 / 241 executable
+Lines NOT hit    : 241
+Coverage (exec)  : 0.0%
