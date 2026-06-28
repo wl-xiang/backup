@@ -1,43 +1,45 @@
 # backup
 
-Linux 服务器通用备份脚本。POSIX 兼容，可同时运行于 `sh` 与 `bash`，适配新旧各版本 Linux 发行版。通过 `.env` 文件或环境变量配置，无需改动脚本即可适配不同业务。
+Linux server generic backup & restore script. POSIX compliant, runs under both `sh` and `bash`, and adapts to new and old Linux distributions. Configurable via `.env` file or environment variables — no script edits needed to adapt to different services.
 
-## 特性
+## Features
 
-- **POSIX 兼容**：仅使用标准语法与基础命令，`sh` / `bash` 通用，无 bash 专属特性。
-- **配置与逻辑分离**：所有可变参数通过 `.env` / 环境变量注入，脚本本体零修改复用。
-- **前置校验**：必填项、路径、依赖在执行核心逻辑前一次性校验，提前报错终止。
-- **故障兜底**：通过 `trap` 捕获所有退出场景，服务曾被尝试停止时，退出前强制尝试启动，避免业务长期停摆。
-- **滚动清理**：按时间戳保留最新 N 份备份与日志，超出自动删除。
-- **极简输出**：仅保留关键节点提示，错误信息统一携带返回码。
+- **POSIX compliant**: standard syntax and basic commands only; no bash-only features. Works under `sh` / `bash`.
+- **Config / logic separation**: all variable parameters injected via `.env` / env vars; the script body is reusable as-is.
+- **Pre-validation**: required vars, paths, and dependencies are validated up front; the script fails fast before touching anything.
+- **Failure fallback**: `trap` catches every exit path; if a service stop was attempted, a start is forced on exit so the service is never left stopped.
+- **Rolling retention**: keeps the newest N backups and logs; older ones are pruned automatically.
+- **Restore support**: `--restore-latest` restores the newest backup, with an optional pre-restore safety snapshot.
+- **Minimal output**: only key milestones are printed; errors carry a return code.
 
-## 项目结构
+## Project structure
 
 ```
 .
-├── backup.sh        # 核心备份脚本（POSIX）
-├── .env.example     # 配置模板（复制为 .env 后修改）
-├── .gitignore       # 忽略 .env 与 logs/
+├── backup.sh        # core backup / restore script (POSIX)
+├── .env.example     # configuration template (copy to .env and edit)
+├── .gitignore       # ignores .env and logs/
 └── README.md
 ```
 
-运行后会在配置指定的目录下生成备份包与日志：
+After a run, the script produces archives and logs at the configured locations:
 
 ```
-{BACKUP_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.tar.gz   # 备份压缩包
-{LOG_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.log         # 当次运行日志
+{BACKUP_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.tar.gz   # backup archive
+{LOG_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.log         # backup run log
+{LOG_DIR}/{PREFIX}_restore_{YYYYMMDD_HHMMSS}.log        # restore run log
 ```
 
-## 快速开始
+## Quick start
 
-1. 复制配置模板并填写必填项：
+1. Copy the config template and fill in the required values:
 
    ```sh
    cp .env.example .env
    vi .env
    ```
 
-2. 编辑 `.env`，至少填写 4 个必填变量（服务停止命令、源数据目录、备份目录、服务启动命令）：
+2. Edit `.env` and fill in at least the 4 required variables (stop command, source dir, backup dir, start command):
 
    ```sh
    STOP_CMD="systemctl stop myapp"
@@ -46,102 +48,140 @@ Linux 服务器通用备份脚本。POSIX 兼容，可同时运行于 `sh` 与 `
    BACKUP_DIR="/var/backups/myapp"
    ```
 
-3. 赋予执行权限并运行：
+3. Make the script executable and run a backup:
 
    ```sh
    chmod +x backup.sh
    ./backup.sh
    ```
 
-4. （可选）加入定时任务，例如每天凌晨 2:30 执行：
+4. (Optional) Schedule a daily backup, e.g. at 02:30:
 
    ```sh
    crontab -e
-   # 添加：
+   # add:
    30 2 * * * /path/to/backup.sh
    ```
 
-## 配置说明
+## Usage
 
-所有变量均支持「系统环境变量 > `.env` 文件 > 内置默认值」三级优先级。已存在的系统环境变量不会被 `.env` 覆盖，便于运行时临时覆写。
-
-| 变量 | 必填 | 默认值 | 说明 |
-| --- | :---: | --- | --- |
-| `STOP_CMD` | 是 | — | 备份前停止服务的命令 |
-| `START_CMD` | 是 | — | 备份后启动服务的命令 |
-| `SRC_DIR` | 是 | — | 待备份的源数据目录（相对/绝对路径） |
-| `BACKUP_DIR` | 是 | — | 备份压缩包存放目录（不存在自动创建） |
-| `MAX_BACKUPS` | 否 | `30` | 备份包与日志共享的最大保留份数（正整数） |
-| `BACKUP_PREFIX` | 否 | `APP` | 备份包与日志文件名前缀 |
-| `LOG_DIR` | 否 | `./logs/` | 日志文件存放目录（不存在自动创建） |
-
-## 工作流程
-
-脚本严格按「校验 → 停服 → 备份 → 启服 → 清理」顺序执行，任一步失败即走对应兜底分支：
-
-1. **前置校验**：加载配置 → 校验必填项 → 校验 `MAX_BACKUPS` 为正整数 → 校验源目录存在 → 自动创建备份/日志目录 → 生成当次统一时间戳。
-2. **停止服务**：执行 `STOP_CMD` 并校验返回码。失败则尝试启动服务后报错退出，不进入备份。
-3. **数据备份**：`tar -zcf` 打包压缩源目录。失败则删除残缺包、立即启动服务、报错退出，不执行清理。
-4. **启动服务**：执行 `START_CMD`。失败仅输出告警，不影响已生成的备份，脚本正常结束。
-5. **滚动清理**：仅当备份成功后执行，分别对备份包与日志按 `MAX_BACKUPS` 保留最新 N 份。
-
-## 异常与兜底
-
-脚本通过 `trap ... EXIT` 捕获正常退出、报错退出与中断信号（`INT` / `HUP` / `TERM`）。只要服务曾被尝试停止（`STOP_CMD` 已执行），无论以何种方式退出，都会强制尝试执行一次 `START_CMD`，杜绝脚本异常导致服务永久停止。
-
-分级失败策略：
-
-| 场景 | 行为 |
-| --- | --- |
-| 停服失败 | 不执行备份；尝试启服后报错退出 |
-| 打包失败 | 删除残缺包；立即启服；报错退出；不执行清理 |
-| 启服失败 | 仅输出告警；备份已生效；脚本正常结束 |
-| 清理失败 | 不影响主流程；仅记录告警日志 |
-
-## 滚动清理
-
-- **匹配规则**：备份包匹配 `{PREFIX}_backup_*.tar.gz`，日志匹配 `{PREFIX}_backup_*.log`，不会误删目录内其他文件。
-- **排序规则**：按文件名字典序排序（文件名含递增时间戳，字典序即时间序），不依赖文件修改时间，避免 mtime 被篡改导致清理错乱。
-- **执行时机**：仅当次备份成功后执行，避免备份失败时误删历史可用备份。
-
-## 日志
-
-- 当次日志文件名与备份包一一对应，共用同一时间戳。
-- 脚本所有输出同时写入终端与日志文件；关键节点（停服、备份完成、启服、清理完成）同步终端提示。
-- 错误信息统一携带 `[ERROR]` 标识与返回码。
-- 日志与备份包共享 `MAX_BACKUPS` 保留上限，清理逻辑完全一致。
-
-## 使用示例
-
-**运行时临时覆写参数**（不改 `.env`）：
-
-```sh
-MAX_BACKUPS=10 BACKUP_PREFIX=DB ./backup.sh
+```
+./backup.sh                                  # run a backup
+./backup.sh --restore-latest                 # restore the latest backup
+./backup.sh --restore-latest --target-dir /new/path
+                                             # restore to a different directory
 ```
 
-**查看当次日志**：
+| Option | Description |
+| --- | --- |
+| `--restore-latest` | Restore the newest backup archive to `SRC_DIR` (interactive). |
+| `--target-dir <dir>` | Override `SRC_DIR` for this run (highest priority). Usable with backup or restore. |
+
+## Configuration
+
+All variables follow the priority: **system environment > `.env` file > built-in defaults**. Existing system env vars are never overwritten by `.env`, so you can override any value at runtime.
+
+| Variable | Required | Default | Description |
+| --- | :---: | --- | --- |
+| `STOP_CMD` | yes | — | Command to stop the service before backup |
+| `START_CMD` | yes | — | Command to start the service after backup |
+| `SRC_DIR` | yes | — | Source data directory to back up (relative or absolute) |
+| `BACKUP_DIR` | yes | — | Directory for backup archives (auto-created if missing) |
+| `MAX_BACKUPS` | no | `30` | Max archives and logs to keep, shared (positive integer) |
+| `BACKUP_PREFIX` | no | `app` | Filename prefix for archives and logs |
+| `LOG_DIR` | no | `./logs/` | Directory for log files (auto-created if missing) |
+
+## Backup workflow
+
+The script runs in strict order: **validate → stop → backup → start → cleanup**. Any failed step takes its dedicated fallback branch.
+
+1. **Pre-validation**: load config → check required vars → validate `MAX_BACKUPS` is a positive integer → verify source dir exists → auto-create backup/log dirs → generate the run timestamp.
+2. **Stop service**: run `STOP_CMD` and check the return code. On failure: attempt to start the service, then exit with an error — no backup is taken.
+3. **Backup data**: `tar -zcf` archives the source directory (by its basename, so the archive is portable). On failure: delete the partial archive, start the service, exit with an error — no cleanup runs.
+4. **Start service**: run `START_CMD`. On failure: emit a warning only; the backup is already saved and the script ends normally.
+5. **Rolling cleanup**: runs only after a successful backup; prunes archives and logs to the newest `MAX_BACKUPS` each.
+
+## Restore workflow (`--restore-latest`)
+
+Restores the newest backup archive from `BACKUP_DIR` into `SRC_DIR` (backup dir → source dir). The flow is interactive; the service is NOT touched (restore only handles data, per design).
+
+1. **Confirm restore**: prints the latest archive path and the restore target, then asks for confirmation. Enter `y` or `yes` to proceed; anything else cancels.
+2. **Choose how to handle existing data**:
+   - `1` — Overwrite the existing data folder directly.
+   - `2` — Back up the current data folder first as `{PREFIX}_backup_before_restore.tar.gz`, then overwrite. This safety snapshot uses a fixed filename (overwritten each restore) and does **not** count against `MAX_BACKUPS`.
+   - `3` — Cancel.
+   - Any value other than `1` or `2` is treated as `3` (cancel).
+3. **Execute**: extracts the archive to a temp dir and moves the data into `SRC_DIR`.
+
+Restore reads `SRC_DIR` and `BACKUP_DIR` from the config by default. To restore to a different location:
+
+```sh
+# via CLI flag (highest priority)
+./backup.sh --restore-latest --target-dir /opt/myapp/data_restored
+
+# via system env var
+SRC_DIR=/opt/myapp/data_restored ./backup.sh --restore-latest
+```
+
+## Exception handling & fallback
+
+`trap ... EXIT` catches normal exits, errors, and interrupt signals (`INT` / `HUP` / `TERM`). Whenever a service stop was actually attempted (`STOP_CMD` ran), the script forces one attempt at `START_CMD` on exit — preventing the service from being left stopped. In restore mode no stop is attempted, so the trap is a no-op.
+
+Graded failure strategy (backup mode):
+
+| Scenario | Behavior |
+| --- | --- |
+| Stop fails | No backup; attempt start; exit with error |
+| Archive fails | Delete partial archive; start service; exit with error; no cleanup |
+| Start fails | Warning only; backup is saved; script ends normally |
+| Cleanup fails | Does not affect the main flow; warning logged |
+
+## Rolling cleanup
+
+- **Matching**: archives match `{PREFIX}_backup_*.tar.gz`; logs match `{PREFIX}_backup_*.log`. Files containing `before_restore` are excluded so the restore safety snapshot is never pruned or counted.
+- **Ordering**: sorted by filename descending (the timestamp in the name makes lexical order equal to time order), independent of file mtime.
+- **Timing**: runs only after a successful backup, so a failed backup never deletes prior usable backups.
+
+## Logging
+
+- Each run's log filename corresponds one-to-one with its archive (backup) or run (restore), sharing the same timestamp.
+- All output is written to both the terminal and the log file; key milestones (stop, backup done, start, cleanup done) are also printed to the terminal.
+- Errors carry an `[ERROR]` tag and the return code.
+- Backup logs and archives share the `MAX_BACKUPS` retention; the cleanup logic is identical for both.
+
+## Examples
+
+**Override parameters at runtime** (without editing `.env`):
+
+```sh
+MAX_BACKUPS=10 BACKUP_PREFIX=db ./backup.sh
+```
+
+**View the latest log**:
 
 ```sh
 ls -t logs/*.log | head -1 | xargs less
 ```
 
-**从备份包恢复**（示例）：
+**Restore the latest backup interactively**:
 
 ```sh
-tar -zxf /var/backups/myapp/APP_backup_20260101_020000.tar.gz -C /tmp/restore
+./backup.sh --restore-latest
 ```
 
-## 兼容性
+## Compatibility
 
-- 语法：仅使用 POSIX 标准（`[ ]` 判断、`.` 加载、无数组 / 关联数组 / bash 字符串截取）。
-- 命令：`date +%Y%m%d_%H%M%S`、`tar -zcf`、`ls` + `sort` 等通用基础参数，不依赖 GNU 专属扩展。
-- 已通过 `sh` 与 `bash` 语法校验，并覆盖成功、配置缺失、停服失败、打包失败、滚动清理、环境变量覆写、信号中断兜底、默认值、参数校验、源目录缺失等场景测试。
+- Syntax: POSIX only (`[ ]` tests, `.` sourcing, no arrays / associative arrays / bash string slicing).
+- Commands: `date +%Y%m%d_%H%M%S`, `tar -zcf`/`-zxf` with `-C`, `ls` + `sort`, all standard parameters — no GNU-only extensions.
+- Verified with `sh` and `bash` syntax checks, plus scenario tests covering success, missing config, stop failure, archive failure, retention, env override, signal-interrupt fallback, defaults, validation errors, missing source dir, and the full restore flow (overwrite, pre-restore backup, cancel, target-dir override, env override, no-archive, non-1/2 default).
 
-## 常见问题
+## FAQ
 
-- **报错 "missing required config"**：`.env` 中有必填变量留空，按提示补齐。
-- **报错 "source directory does not exist"**：`SRC_DIR` 路径不存在或不是目录。
-- **报错 "MAX_BACKUPS must be a positive integer"**：`MAX_BACKUPS` 必须为 ≥1 的整数。
-- **备份目录 / 日志目录不存在**：脚本会自动递归创建，无需手动建立。
-- **首次运行**：正常生成备份与日志，无历史文件时跳过清理。
-- **启服告警但备份成功**：检查 `START_CMD` 是否正确；备份文件已生成且有效。
+- **"missing required config"**: a required variable in `.env` is empty — fill it in as the message indicates.
+- **"source directory does not exist"**: `SRC_DIR` does not exist or is not a directory.
+- **"MAX_BACKUPS must be a positive integer"**: `MAX_BACKUPS` must be an integer ≥ 1.
+- **"backup directory does not exist"** (restore): `BACKUP_DIR` must already contain archives for restore.
+- **Backup/log directory missing**: the script auto-creates them recursively — no manual setup needed.
+- **First run**: archives and logs are created normally; cleanup is skipped when there is no history.
+- **Start warning but backup succeeded**: check that `START_CMD` is correct; the archive is already valid.
+- **Restore cancelled**: re-run and answer `y`/`yes` at the confirm prompt and `1` or `2` at the action prompt.
