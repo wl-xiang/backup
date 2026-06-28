@@ -1,0 +1,5 @@
+# Local environment configuration (contains deployment-specific values)
+.env
+
+# Backup log files
+logs/
