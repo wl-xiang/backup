@@ -1,5 +1,7 @@
 # backup
 
+> **English** / [简体中文](README_zh.md)
+
 Linux server generic backup & restore script. POSIX compliant, runs under both `sh` and `bash`, and adapts to new and old Linux distributions. Configurable via `.env` file or environment variables — no script edits needed to adapt to different services.
 
 ## Features
