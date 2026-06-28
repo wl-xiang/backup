@@ -48,8 +48,14 @@ for _v in $CONFIG_VARS; do
 done
 
 # Load .env file (file config, lower priority than system env)
+# Use set -e while sourcing so any syntax/command error in .env is fatal.
 if [ -f "$SCRIPT_DIR/.env" ]; then
+    _restore_set_e=0
+    case "$-" in *e*) _restore_set_e=1 ;; esac
+    set -e
     . "$SCRIPT_DIR/.env"
+    [ "$_restore_set_e" -eq 0 ] && set +e
+    unset _restore_set_e
 fi
 
 # Restore system env values (override .env)
@@ -71,10 +77,11 @@ if [ -n "$TARGET_DIR" ]; then
     SRC_DIR="$TARGET_DIR"
 fi
 
-# Normalize paths: strip a single trailing slash for clean concatenation
-SRC_DIR="${SRC_DIR%/}"
-BACKUP_DIR="${BACKUP_DIR%/}"
-LOG_DIR="${LOG_DIR%/}"
+# Normalize paths: strip a single trailing slash for clean concatenation.
+# Preserve the root path "/" so it remains detectable for safety checks.
+[ "$SRC_DIR" != "/" ] && SRC_DIR="${SRC_DIR%/}"
+[ "$BACKUP_DIR" != "/" ] && BACKUP_DIR="${BACKUP_DIR%/}"
+[ "$LOG_DIR" != "/" ] && LOG_DIR="${LOG_DIR%/}"
 
 # ----------------------------------------------------------------------------
 # Module 2: Utility functions
@@ -159,6 +166,14 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     if [ ! -d "$BACKUP_DIR" ]; then
         printf '[%s] [ERROR] backup directory does not exist: %s\n' \
             "$(date +%Y%m%d_%H%M%S)" "$BACKUP_DIR" >&2
+        exit 1
+    fi
+
+    # Safety guard: refuse to overwrite the root filesystem.
+    case "$SRC_DIR" in /|//) SRC_DIR="/" ;; esac
+    if [ "$SRC_DIR" = "/" ]; then
+        printf '[%s] [ERROR] refusing to restore to root directory\n' \
+            "$(date +%Y%m%d_%H%M%S)" >&2
         exit 1
     fi
 
