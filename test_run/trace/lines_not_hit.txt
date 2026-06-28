@@ -1,0 +1,86 @@
+L17: RESTORE_MODE=0
+L18: TARGET_DIR=""
+L23: --target-dir)
+L25: TARGET_DIR="$2"; shift 2 ;;
+L28: *)
+L30: esac
+L38: SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+L41: CONFIG_VARS="STOP_CMD SRC_DIR BACKUP_DIR START_CMD MAX_BACKUPS BACKUP_PREFIX LOG_DIR"
+L45: for _v in $CONFIG_VARS; do
+L46: eval "_sysset_${_v}=\${${_v}+set}"
+L52: . "$SCRIPT_DIR/.env"
+L56: for _v in $CONFIG_VARS; do
+L61: done
+L65: : "${MAX_BACKUPS:=30}"
+L66: : "${BACKUP_PREFIX:=app}"
+L71: SRC_DIR="$TARGET_DIR"
+L75: SRC_DIR="${SRC_DIR%/}"
+L76: BACKUP_DIR="${BACKUP_DIR%/}"
+L85: _log() {
+L86: _level="$1"; shift
+L87: _msg="[$(date +%Y%m%d_%H%M%S)] [$_level] $*"
+L93: unset _level _msg
+L94: }
+L96: log_warn()  { _log WARN  "$@"; }
+L106: _cdir="$1"; _cpat="$2"; _ckeep="$3"; _ccount=0
+L107: _clist=$(ls -1 "$_cdir"/$_cpat 2>/dev/null | grep -v 'before_restore' | sort -r)
+L120: START_ATTEMPTED=0
+L121: STOP_ATTEMPTED=0
+L126: ensure_service_started() {
+L127: [ "$START_ATTEMPTED" -eq 1 ] && return 0
+L128: START_ATTEMPTED=1
+L138: }
+L140: trap 'ensure_service_started' EXIT
+L141: trap 'exit 1' INT HUP TERM
+L150: [ -z "${BACKUP_DIR:-}" ]    && _missing="$_missing BACKUP_DIR"
+L160: printf '[%s] [ERROR] backup directory does not exist: %s\n' \
+L166: printf '[%s] [ERROR] cannot create log directory: %s\n' \
+L168: exit 1
+L171: TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+L172: LOG_FILE="$LOG_DIR/${BACKUP_PREFIX}_restore_${TIMESTAMP}.log"
+L175: log_info "restore mode started (timestamp: $TIMESTAMP)"
+L178: _latest=$(ls -1 "$BACKUP_DIR"/${BACKUP_PREFIX}_backup_*.tar.gz 2>/dev/null \
+L179: | grep -v 'before_restore' | sort -r | head -1)
+L186: printf 'Latest backup archive: %s\n' "$_latest"
+L187: printf 'Restore target:        %s\n' "$SRC_DIR"
+L193: esac
+L196: printf 'How to handle the existing data folder?\n'
+L197: printf '  1) Overwrite existing data directly\n'
+L206: 2)
+L208: _pre="$BACKUP_DIR/${BACKUP_PREFIX}_backup_before_restore.tar.gz"
+L214: log_info "pre-restore backup created"
+L219: *)
+L220: log_info "restore cancelled by user"; exit 0 ;;
+L221: esac
+L224: log_info "extracting archive: $_latest"
+L225: _tmp=$(mktemp -d 2>/dev/null) || _tmp="/tmp/${BACKUP_PREFIX}_restore_$$"
+L233: _top=$(ls -1A "$_tmp" 2>/dev/null | head -1)
+L240: rm -rf "$SRC_DIR"
+L244: exit 1
+L246: rm -rf "$_tmp"
+L247: log_info "restore completed successfully"
+L257: _missing=""
+L258: [ -z "${STOP_CMD:-}" ]   && _missing="$_missing STOP_CMD"
+L268: case "$MAX_BACKUPS" in
+L269: ''|*[!0-9]*)
+L271: "$(date +%Y%m%d_%H%M%S)" "$MAX_BACKUPS" >&2
+L273: esac
+L275: printf '[%s] [ERROR] MAX_BACKUPS must be >= 1\n' \
+L281: printf '[%s] [ERROR] source directory does not exist: %s\n' \
+L287: printf '[%s] [ERROR] cannot create backup directory: %s\n' \
+L292: printf '[%s] [ERROR] cannot create log directory: %s\n' \
+L294: exit 1
+L297: TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+L298: BACKUP_FILE="$BACKUP_DIR/${BACKUP_PREFIX}_backup_${TIMESTAMP}.tar.gz"
+L302: log_info "source      : $SRC_DIR"
+L312: log_info "stopping service: $STOP_CMD"
+L313: STOP_ATTEMPTED=1
+L324: log_info "creating archive..."
+L328: ensure_service_started
+L329: exit 1
+L332: log_error "archive was not created: $BACKUP_FILE"
+L334: exit 1
+L336: log_info "archive created successfully"
+L339: ensure_service_started
+L342: log_info "retention: keeping newest $MAX_BACKUPS archives/logs"
+L347: exit 0

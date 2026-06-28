@@ -1,1 +1,6 @@
-Unique lines hit: 0
+Unique lines hit: 173
+Executable lines : 241
+Lines hit        : 173
+Lines not hit    : 86
+Branch lines not hit: 29
+Coverage (exec)  : 71.8%

@@ -101,19 +101,19 @@
 [PASS] T28.1 TERM exit (1)
 [FAIL] T28.2 start attempted
   expected to contain: starting service
-  actual           : [20260628_085634] [INFO] backup run started (timestamp: 20260628_085634)
-[20260628_085634] [INFO] source      : ./src
-[20260628_085634] [INFO] archive     : ./backup/app_backup_20260628_085634.tar.gz
-[20260628_085634] [INFO] log         : ./logs/app_backup_20260628_085634.log
-[20260628_085634] [INFO] stopping service: sleep 5; true
+  actual           : [20260628_085712] [INFO] backup run started (timestamp: 20260628_085712)
+[20260628_085712] [INFO] source      : ./src
+[20260628_085712] [INFO] archive     : ./backup/app_backup_20260628_085712.tar.gz
+[20260628_085712] [INFO] log         : ./logs/app_backup_20260628_085712.log
+[20260628_085712] [INFO] stopping service: sleep 5; true
 [PASS] T29.1 HUP exit (1)
 [FAIL] T29.2 start attempted
   expected to contain: starting service
-  actual           : [20260628_085639] [INFO] backup run started (timestamp: 20260628_085639)
-[20260628_085639] [INFO] source      : ./src
-[20260628_085639] [INFO] archive     : ./backup/app_backup_20260628_085639.tar.gz
-[20260628_085639] [INFO] log         : ./logs/app_backup_20260628_085639.log
-[20260628_085639] [INFO] stopping service: sleep 5; true
+  actual           : [20260628_085717] [INFO] backup run started (timestamp: 20260628_085717)
+[20260628_085717] [INFO] source      : ./src
+[20260628_085717] [INFO] archive     : ./backup/app_backup_20260628_085717.tar.gz
+[20260628_085717] [INFO] log         : ./logs/app_backup_20260628_085717.log
+[20260628_085717] [INFO] stopping service: sleep 5; true
 [PASS] T30.1 no start in restore
 [PASS] T31.1 log file contains 'archive created'
 [PASS] T31.2 log file contains 'stopping service'

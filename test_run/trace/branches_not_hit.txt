@@ -1,0 +1,29 @@
+L51 (branch): if [ -f "$SCRIPT_DIR/.env" ]; then
+L57 (branch): if eval "[ \"\${_sysset_${_v}}\" = set ]"; then
+L70 (branch): if [ -n "$TARGET_DIR" ]; then
+L92 (branch): fi
+L105 (branch): cleanup_old_files() {
+L147 (branch): if [ "$RESTORE_MODE" -eq 1 ]; then
+L157 (branch): fi
+L159 (branch): if [ ! -d "$BACKUP_DIR" ]; then
+L163 (branch): fi
+L165 (branch): if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+L169 (branch): fi
+L180 (branch): if [ -z "$_latest" ]; then
+L213 (branch): fi
+L215 (branch): else
+L217 (branch): fi
+L234 (branch): if [ -z "$_top" ]; then
+L245 (branch): fi
+L266 (branch): fi
+L278 (branch): fi
+L280 (branch): if [ ! -d "$SRC_DIR" ]; then
+L284 (branch): fi
+L286 (branch): if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
+L290 (branch): fi
+L295 (branch): fi
+L325 (branch): if ! tar -zcf "$BACKUP_FILE" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE"; then
+L330 (branch): fi
+L331 (branch): if [ ! -f "$BACKUP_FILE" ]; then
+L335 (branch): fi
+L343 (branch): cleanup_old_files "$BACKUP_DIR" "${BACKUP_PREFIX}_backup_*.tar.gz" "$MAX_BACKUPS"
