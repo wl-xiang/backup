@@ -30,7 +30,7 @@ Linux 服务器通用备份与恢复脚本。POSIX 兼容，可同时运行于 `
 ```
 {BACKUP_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.tar.gz   # 备份压缩包
 {LOG_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.log         # 备份运行日志
-{LOG_DIR}/{PREFIX}_restore_{YYYYMMDD_HHMMSS}.log          # 恢复运行日志
+{LOG_DIR}/{PREFIX}_restore.log                            # 恢复运行日志（每次覆盖）
 ```
 
 ## 快速开始

@@ -184,7 +184,8 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     fi
 
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    LOG_FILE="$LOG_DIR/${BACKUP_PREFIX}_restore_${TIMESTAMP}.log"
+    LOG_FILE="$LOG_DIR/${BACKUP_PREFIX}_restore.log"
+    : > "$LOG_FILE" 2>/dev/null || true
 
     # ---- Restore flow ------------------------------------------------------
     log_info "restore mode started (timestamp: $TIMESTAMP)"

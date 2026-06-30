@@ -29,7 +29,7 @@ After a run, the script produces archives and logs at the configured locations:
 ```
 {BACKUP_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.tar.gz   # backup archive
 {LOG_DIR}/{PREFIX}_backup_{YYYYMMDD_HHMMSS}.log         # backup run log
-{LOG_DIR}/{PREFIX}_restore_{YYYYMMDD_HHMMSS}.log        # restore run log
+{LOG_DIR}/{PREFIX}_restore.log                        # restore run log (overwritten each run)
 ```
 
 ## Quick start
