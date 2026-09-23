@@ -34,7 +34,7 @@ done
 # Module 1: Configuration loading
 # ----------------------------------------------------------------------------
 
-# Resolve this script's directory (used to locate .env)
+# Resolve this script's directory (used to locate .env and to anchor relative paths)
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # Registry of all recognized configuration variables
@@ -72,16 +72,53 @@ unset _v
 : "${BACKUP_PREFIX:=app}"
 : "${LOG_DIR:=./logs/}"
 
-# --target-dir overrides SRC_DIR (highest priority, applies to both modes)
+# --target-dir overrides SRC_DIR (highest priority, applies to both modes).
+# Relative CLI paths resolve against the current working directory (intuitive
+# when typed interactively).
 if [ -n "$TARGET_DIR" ]; then
-    SRC_DIR="$TARGET_DIR"
+    case "$TARGET_DIR" in
+        /*) SRC_DIR="$TARGET_DIR" ;;
+        *)  SRC_DIR="$(pwd)/$TARGET_DIR" ;;
+    esac
 fi
 
-# Normalize paths: strip a single trailing slash for clean concatenation.
-# Preserve the root path "/" so it remains detectable for safety checks.
-[ "$SRC_DIR" != "/" ] && SRC_DIR="${SRC_DIR%/}"
-[ "$BACKUP_DIR" != "/" ] && BACKUP_DIR="${BACKUP_DIR%/}"
-[ "$LOG_DIR" != "/" ] && LOG_DIR="${LOG_DIR%/}"
+# Resolve config-relative paths against the script directory so that cron /
+# different CWDs cannot silently redirect SRC_DIR, BACKUP_DIR, or LOG_DIR.
+resolve_config_path() {
+    case "$1" in
+        '')  printf '' ;;
+        /*)  printf '%s' "$1" ;;
+        *)
+            _rp="$1"
+            case "$_rp" in
+                ./*) _rp="${_rp#./}" ;;
+            esac
+            printf '%s/%s' "$SCRIPT_DIR" "$_rp"
+            ;;
+    esac
+}
+[ -n "${SRC_DIR:-}" ]    && SRC_DIR=$(resolve_config_path "$SRC_DIR")
+[ -n "${BACKUP_DIR:-}" ] && BACKUP_DIR=$(resolve_config_path "$BACKUP_DIR")
+[ -n "${LOG_DIR:-}" ]    && LOG_DIR=$(resolve_config_path "$LOG_DIR")
+
+# Normalize paths: strip ALL trailing slashes for clean concatenation and so
+# root guards match ("//", "///", ... become "/"). Preserve "/" itself.
+strip_trailing_slashes() {
+    _st="${1:-}"
+    while [ -n "$_st" ] && [ "$_st" != "/" ] && [ "${_st%/}" != "$_st" ]; do
+        _st="${_st%/}"
+    done
+    printf '%s' "$_st"
+}
+if [ -n "${SRC_DIR:-}" ]; then
+    SRC_DIR=$(strip_trailing_slashes "$SRC_DIR")
+fi
+if [ -n "${BACKUP_DIR:-}" ]; then
+    BACKUP_DIR=$(strip_trailing_slashes "$BACKUP_DIR")
+fi
+if [ -n "${LOG_DIR:-}" ]; then
+    LOG_DIR=$(strip_trailing_slashes "$LOG_DIR")
+fi
 
 # ----------------------------------------------------------------------------
 # Module 2: Utility functions
@@ -93,7 +130,7 @@ _log() {
     _level="$1"; shift
     _msg="[$(date +%Y%m%d_%H%M%S)] [$_level] $*"
     if [ -n "${LOG_FILE:-}" ] && [ -d "${LOG_DIR:-}" ]; then
-        printf '%s\n' "$_msg" | tee -a "$LOG_FILE"
+        printf '%s\n' "$_msg" | tee -a "$LOG_FILE" || printf '%s\n' "$_msg"
     else
         printf '%s\n' "$_msg"
     fi
@@ -109,15 +146,54 @@ log_error() { _log ERROR "$@"; }
 # that ordering does not depend on file mtime.
 # Files whose name contains "before_restore" are excluded: they are safety
 # snapshots created by the restore flow and do not count against MAX_BACKUPS.
+# "|| true" keeps this safe under `set -e`.
 cleanup_old_files() {
     _cdir="$1"; _cpat="$2"; _ckeep="$3"; _ccount=0
-    _clist=$(ls -1 "$_cdir"/$_cpat 2>/dev/null | grep -v 'before_restore' | sort -r)
+    _clist=$(ls -1 "$_cdir"/$_cpat 2>/dev/null | grep -v 'before_restore' | sort -r || true)
     [ -z "$_clist" ] && return 0
     printf '%s\n' "$_clist" | while IFS= read -r _cf; do
         _ccount=$((_ccount + 1))
         [ "$_ccount" -le "$_ckeep" ] && continue
         rm -f "$_cf" 2>/dev/null || log_warn "failed to delete: $_cf"
     done
+    return 0
+}
+
+# ----------------------------------------------------------------------------
+# Concurrency lock (mkdir-based, POSIX; stale-lock recovery via PID)
+# ----------------------------------------------------------------------------
+LOCK_DIR=""
+acquire_lock() {
+    LOCK_DIR="$LOG_DIR/.${BACKUP_PREFIX}_run.lock"
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+        return 0
+    fi
+    _opid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ -n "$_opid" ] && [ "$_opid" != "$$" ] && kill -0 "$_opid" 2>/dev/null; then
+        printf '[%s] [ERROR] another instance is already running (pid %s, lock: %s)\n' \
+            "$(date +%Y%m%d_%H%M%S)" "$_opid" "$LOCK_DIR" >&2
+        exit 1
+    fi
+    log_warn "removing stale lock (owner pid ${_opid:-unknown} is not running): $LOCK_DIR"
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+        return 0
+    fi
+    printf '[%s] [ERROR] cannot acquire lock: %s\n' \
+        "$(date +%Y%m%d_%H%M%S)" "$LOCK_DIR" >&2
+    exit 1
+}
+
+release_lock() {
+    [ -n "${LOCK_DIR:-}" ] || return 0
+    [ -d "$LOCK_DIR" ] || return 0
+    _pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ "$_pid" = "$$" ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+    return 0
 }
 
 # ----------------------------------------------------------------------------
@@ -129,12 +205,13 @@ STOP_ATTEMPTED=0
 
 # Safety net: ensure the service is (re)started on any exit, but only if a
 # stop was actually attempted and a start command is configured. Idempotent.
-# In restore mode STOP_ATTEMPTED stays 0, so this is a no-op.
+# Runs before lock release so a crashed restore/backup never leaves the
+# service down or the lock held.
 ensure_service_started() {
     [ "$START_ATTEMPTED" -eq 1 ] && return 0
-    START_ATTEMPTED=1
-    [ -z "${START_CMD:-}" ] && return 0
     [ "${STOP_ATTEMPTED:-0}" -eq 0 ] && return 0
+    [ -z "${START_CMD:-}" ] && return 0
+    START_ATTEMPTED=1
     log_info "starting service: $START_CMD"
     eval "$START_CMD" >/dev/null 2>&1
     _rc=$?
@@ -144,8 +221,27 @@ ensure_service_started() {
     return 0
 }
 
-trap 'ensure_service_started' EXIT
+on_exit() {
+    ensure_service_started
+    release_lock
+}
+trap 'on_exit' EXIT
 trap 'exit 1' INT HUP TERM
+
+# Stop the service once; on failure try to start it again and abort.
+# Used by both backup and restore modes.
+stop_service() {
+    log_info "stopping service: $STOP_CMD"
+    STOP_ATTEMPTED=1
+    eval "$STOP_CMD" >/dev/null 2>&1
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        log_error "stop service failed (exit code: $_rc)"
+        ensure_service_started
+        exit 1
+    fi
+    return 0
+}
 
 # ----------------------------------------------------------------------------
 # Mode dispatch
@@ -169,10 +265,16 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
         exit 1
     fi
 
-    # Safety guard: refuse to overwrite the root filesystem.
-    case "$SRC_DIR" in /|//) SRC_DIR="/" ;; esac
+    # Safety guard: refuse to overwrite the root filesystem ("//", "///" ... too).
     if [ "$SRC_DIR" = "/" ]; then
         printf '[%s] [ERROR] refusing to restore to root directory\n' \
+            "$(date +%Y%m%d_%H%M%S)" >&2
+        exit 1
+    fi
+
+    # Refuse stopping the service without a matching start command.
+    if [ -n "${STOP_CMD:-}" ] && [ -z "${START_CMD:-}" ]; then
+        printf '[%s] [ERROR] STOP_CMD is set but START_CMD is empty; refusing to stop without start\n' \
             "$(date +%Y%m%d_%H%M%S)" >&2
         exit 1
     fi
@@ -192,11 +294,20 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
 
     # Locate the latest regular backup (exclude before_restore snapshots)
     _latest=$(ls -1 "$BACKUP_DIR"/${BACKUP_PREFIX}_backup_*.tar.gz 2>/dev/null \
-              | grep -v 'before_restore' | sort -r | head -1)
+              | grep -v 'before_restore' | sort -r | head -1 || true)
     if [ -z "$_latest" ]; then
         log_error "no backup archive found in $BACKUP_DIR (prefix: $BACKUP_PREFIX)"
         exit 1
     fi
+
+    # Integrity-check the archive BEFORE stopping anything or touching data.
+    if ! tar -tzf "$_latest" >/dev/null 2>&1; then
+        log_error "backup archive is corrupt or unreadable: $_latest"
+        exit 1
+    fi
+
+    # Acquire lock before prompts so a concurrent backup cannot start mid-restore.
+    acquire_lock
 
     # Step 1: confirm restore and print the archive path
     printf 'Latest backup archive: %s\n' "$_latest"
@@ -216,50 +327,121 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     printf '  3) Cancel\n'
     printf 'Enter option [1/2/3]: '
     read _option
+    _mode=0
     case "$_option" in
-        1)
-            log_info "overwrite mode selected" ;;
-        2)
-            if [ -d "$SRC_DIR" ]; then
-                _pre="$BACKUP_DIR/${BACKUP_PREFIX}_backup_before_restore.tar.gz"
-                log_info "creating pre-restore backup: $_pre"
-                if ! tar -zcf "$_pre" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE"; then
-                    log_error "pre-restore backup failed"
-                    exit 1
-                fi
-                log_info "pre-restore backup created"
-            else
-                log_warn "source dir does not exist, skipping pre-restore backup"
-            fi
-            ;;
-        *)
-            log_info "restore cancelled by user"; exit 0 ;;
+        1) _mode=1 ;;
+        2) _mode=2 ;;
+        *) log_info "restore cancelled by user"; exit 0 ;;
     esac
 
-    # Step 3: execute the restore (backup_dir -> src_dir)
+    # Step 3: stop the service (when configured) so data is not swapped under a live process
+    if [ -n "${STOP_CMD:-}" ]; then
+        stop_service
+    else
+        log_warn "STOP_CMD not set; restoring without stopping any service"
+    fi
+
+    # Step 4 (option 2): pre-restore safety snapshot of current data
+    if [ "$_mode" -eq 2 ]; then
+        if [ -d "$SRC_DIR" ]; then
+            _pre="$BACKUP_DIR/${BACKUP_PREFIX}_backup_before_restore.tar.gz"
+            log_info "creating pre-restore backup: $_pre"
+            if ! tar -zcf "$_pre" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE"; then
+                log_error "pre-restore backup failed"
+                exit 1
+            fi
+            log_info "pre-restore backup created"
+        else
+            log_warn "source dir does not exist, skipping pre-restore backup"
+        fi
+    fi
+
+    # Step 5: extract to a temp dir, then swap with rollback on failure.
+    # Order: validate extract -> move current data aside (rename, same FS)
+    #        -> move new data into place -> delete old only after success.
+    # On any failure the previous data is moved back before exiting.
     log_info "extracting archive: $_latest"
     _tmp=$(mktemp -d 2>/dev/null) || _tmp="/tmp/${BACKUP_PREFIX}_restore_$$"
-    [ -d "$_tmp" ] || mkdir -p "$_tmp"
+    [ -d "$_tmp" ] || mkdir -p "$_tmp" || { log_error "cannot create temp dir: $_tmp"; exit 1; }
     if ! tar -zxf "$_latest" -C "$_tmp" 2>>"$LOG_FILE"; then
         log_error "extraction failed"
         rm -rf "$_tmp"
         exit 1
     fi
-    # Archive stores the source dir basename as its single top-level entry.
-    _top=$(ls -1A "$_tmp" 2>/dev/null | head -1)
-    if [ -z "$_top" ]; then
+
+    _nentries=$(ls -1A "$_tmp" 2>/dev/null | wc -l | tr -d ' ')
+    if [ -z "$_nentries" ] || [ "$_nentries" -eq 0 ]; then
         log_error "archive is empty"
         rm -rf "$_tmp"
         exit 1
     fi
-    mkdir -p "$(dirname "$SRC_DIR")" 2>/dev/null
-    rm -rf "$SRC_DIR"
-    if ! mv "$_tmp/$_top" "$SRC_DIR" 2>>"$LOG_FILE"; then
-        log_error "failed to move restored data to $SRC_DIR"
-        rm -rf "$_tmp"
-        exit 1
+
+    # Move current data aside (same-filesystem rename = atomic).
+    _old_side=""
+    if [ -e "$SRC_DIR" ]; then
+        _old_side="${SRC_DIR}.pre_restore.$$"
+        rm -rf "$_old_side" 2>/dev/null || true
+        if ! mv "$SRC_DIR" "$_old_side" 2>>"$LOG_FILE"; then
+            log_error "failed to move existing data aside: $SRC_DIR"
+            rm -rf "$_tmp"
+            exit 1
+        fi
     fi
-    rm -rf "$_tmp"
+
+    _entries_list="${LOG_DIR:-/tmp}/.${BACKUP_PREFIX}_restore_entries.$$"
+    _rollback() {
+        log_error "$1"
+        if [ -n "${_old_side:-}" ] && [ -e "$_old_side" ]; then
+            rm -rf "$SRC_DIR" 2>/dev/null || true
+            if mv "$_old_side" "$SRC_DIR" 2>>"$LOG_FILE"; then
+                log_info "previous data restored to $SRC_DIR"
+            else
+                log_error "rollback failed; previous data left at: $_old_side"
+            fi
+        fi
+        rm -f "${_entries_list:-}" 2>/dev/null || true
+        rm -rf "$_tmp" 2>/dev/null || true
+        exit 1
+    }
+
+    mkdir -p "$(dirname "$SRC_DIR")" 2>/dev/null || true
+
+    if [ "$_nentries" -eq 1 ]; then
+        _top=$(ls -1A "$_tmp" 2>/dev/null | head -1)
+        if [ -d "$_tmp/$_top" ]; then
+            # Normal case (our own backups): archive root is the source dir basename.
+            if ! mv "$_tmp/$_top" "$SRC_DIR" 2>>"$LOG_FILE"; then
+                _rollback "failed to move restored data to $SRC_DIR"
+            fi
+        else
+            # Single non-directory entry: place it inside SRC_DIR.
+            mkdir -p "$SRC_DIR" 2>/dev/null || _rollback "cannot create $SRC_DIR"
+            if ! mv "$_tmp/$_top" "$SRC_DIR"/ 2>>"$LOG_FILE"; then
+                _rollback "failed to move restored entry into $SRC_DIR"
+            fi
+        fi
+    else
+        # Multi-entry archive (foreign/partial): move every entry into SRC_DIR.
+        # Line-based read keeps spaces/special chars intact (no word-splitting).
+        mkdir -p "$SRC_DIR" 2>/dev/null || _rollback "cannot create $SRC_DIR"
+        if ! ls -1A "$_tmp" > "$_entries_list" 2>/dev/null; then
+            _rollback "failed to list archive entries"
+        fi
+        while IFS= read -r _top; do
+            [ -n "$_top" ] || continue
+            if ! mv "$_tmp/$_top" "$SRC_DIR"/ 2>>"$LOG_FILE"; then
+                _rollback "failed to move restored entry: $_top"
+            fi
+        done < "$_entries_list"
+    fi
+
+    # Success: drop temp dir, entry list, and the aside-rename of old data.
+    rm -f "$_entries_list" 2>/dev/null || true
+    rm -rf "$_tmp" 2>/dev/null || true
+    if [ -n "$_old_side" ] && [ -e "$_old_side" ]; then
+        rm -rf "$_old_side" 2>/dev/null || log_warn "could not remove old data: $_old_side"
+    fi
+
     log_info "restore completed successfully"
     log_info "restored from: $_latest"
     log_info "restored to:   $SRC_DIR"
@@ -314,6 +496,9 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/${BACKUP_PREFIX}_backup_${TIMESTAMP}.tar.gz"
 LOG_FILE="$LOG_DIR/${BACKUP_PREFIX}_backup_${TIMESTAMP}.log"
 
+# Prevent concurrent runs (two crons / manual + cron) from clashing.
+acquire_lock
+
 log_info "backup run started (timestamp: $TIMESTAMP)"
 log_info "source      : $SRC_DIR"
 log_info "archive     : $BACKUP_FILE"
@@ -321,40 +506,48 @@ log_info "log         : $LOG_FILE"
 
 # ----------------------------------------------------------------------------
 # Module 3: Main flow control
-#            (validate -> stop -> backup -> start -> cleanup)
+#            (validate -> lock -> stop -> backup -> verify -> start -> cleanup)
 # ----------------------------------------------------------------------------
 
 # Step 1: stop service
-log_info "stopping service: $STOP_CMD"
-STOP_ATTEMPTED=1
-eval "$STOP_CMD" >/dev/null 2>&1
-_rc=$?
-if [ "$_rc" -ne 0 ]; then
-    log_error "stop service failed (exit code: $_rc)"
-    ensure_service_started
-    exit 1
-fi
+stop_service
 
 # Step 2: backup data. Archive the source dir by its basename only (-C parent),
 # so the archive is portable and can be restored to any target path.
 log_info "creating archive..."
-if ! tar -zcf "$BACKUP_FILE" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE"; then
-    log_error "tar archive failed"
-    rm -f "$BACKUP_FILE" 2>/dev/null
-    ensure_service_started
-    exit 1
+_tar_rc=0
+tar -zcf "$BACKUP_FILE" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE" || _tar_rc=$?
+if [ "$_tar_rc" -ne 0 ]; then
+    # GNU tar can exit 1 on non-fatal warnings (sockets, changed files, ...).
+    # Only discard the archive if it does not actually verify.
+    if [ -f "$BACKUP_FILE" ] && tar -tzf "$BACKUP_FILE" >/dev/null 2>&1; then
+        log_warn "tar exited with code $_tar_rc but archive verified OK; keeping it"
+    else
+        log_error "tar archive failed (exit code: $_tar_rc)"
+        rm -f "$BACKUP_FILE" 2>/dev/null || true
+        ensure_service_started
+        exit 1
+    fi
 fi
+
+# Step 3: integrity check - never report success on an unreadable archive.
 if [ ! -f "$BACKUP_FILE" ]; then
     log_error "archive was not created: $BACKUP_FILE"
     ensure_service_started
     exit 1
 fi
-log_info "archive created successfully"
+if ! tar -tzf "$BACKUP_FILE" >/dev/null 2>&1; then
+    log_error "archive failed integrity check (tar -tzf): $BACKUP_FILE"
+    rm -f "$BACKUP_FILE" 2>/dev/null || true
+    ensure_service_started
+    exit 1
+fi
+log_info "archive created and verified successfully"
 
-# Step 3: start service (failure here is a warning only; backup is already saved)
+# Step 4: start service (failure here is a warning only; backup is already saved)
 ensure_service_started
 
-# Step 4: rolling cleanup (only after a successful backup)
+# Step 5: rolling cleanup (only after a successful backup)
 log_info "retention: keeping newest $MAX_BACKUPS archives/logs"
 cleanup_old_files "$BACKUP_DIR" "${BACKUP_PREFIX}_backup_*.tar.gz" "$MAX_BACKUPS"
 cleanup_old_files "$LOG_DIR" "${BACKUP_PREFIX}_backup_*.log" "$MAX_BACKUPS"
