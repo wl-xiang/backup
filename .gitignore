@@ -3,3 +3,6 @@
 
 # Backup log files
 logs/
+
+# Runtime lock directory
+*.lock/
