@@ -9,15 +9,66 @@
 #    ./backup.sh --restore-latest                 # restore the latest backup
 #    ./backup.sh --restore-latest --target-dir /new/path
 #                                                 # restore to a different dir
+#    ./backup.sh --help                           # show full usage
 # ============================================================================
 
 # ----------------------------------------------------------------------------
 # Parse CLI arguments
 # ----------------------------------------------------------------------------
+
+# Print full usage: modes, options, configuration, files, examples, exit codes.
+print_usage() {
+    cat <<'EOF'
+Linux Server Generic Backup / Restore Script
+
+Usage:
+  ./backup.sh [OPTIONS]
+
+Modes (mutually exclusive; default when no mode option is given is backup):
+  (none)                 Run a backup of SRC_DIR.
+  --restore-latest       Restore the latest backup archive into SRC_DIR.
+
+Options:
+  --target-dir DIR       Override SRC_DIR for this run (applies to both modes).
+                         A relative DIR resolves against the current working
+                         directory.
+  -h, --help             Show this help and exit.
+
+Configuration (system env > .env file > built-in defaults):
+  STOP_CMD        Command to stop the service before backup/restore.  (required)
+  START_CMD       Command to start the service after backup/restore.  (required)
+  SRC_DIR         Directory to back up / restore into.                (required)
+  BACKUP_DIR      Directory where archives are written.               (required)
+  MAX_BACKUPS     Newest N archives and logs to keep. Default: 30
+  BACKUP_PREFIX   Prefix for archive / log file names. Default: app
+  LOG_DIR         Directory for logs and the run lock. Default: ./logs/
+
+Files:
+  .env                                                   Optional, next to this script
+  <BACKUP_DIR>/<BACKUP_PREFIX>_backup_<timestamp>.tar.gz           Backup archive
+  <BACKUP_DIR>/<BACKUP_PREFIX>_backup_before_restore.tar.gz        Pre-restore safety snapshot
+  <LOG_DIR>/<BACKUP_PREFIX>_backup_<timestamp>.log                 Backup log
+  <LOG_DIR>/<BACKUP_PREFIX>_restore.log                            Restore log
+
+Examples:
+  ./backup.sh
+  ./backup.sh --target-dir /srv/app/data
+  ./backup.sh --restore-latest
+  ./backup.sh --restore-latest --target-dir /srv/app/newdata
+
+Exit codes:
+  0  success, or restore cancelled by the user
+  1  runtime failure
+  2  invalid command-line usage
+EOF
+}
+
 RESTORE_MODE=0
 TARGET_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        -h|--help)
+            print_usage; exit 0 ;;
         --restore-latest)
             RESTORE_MODE=1; shift ;;
         --target-dir)
@@ -26,7 +77,9 @@ while [ $# -gt 0 ]; do
         --target-dir=*)
             TARGET_DIR="${1#--target-dir=}"; shift ;;
         *)
-            printf 'error: unknown option: %s\n' "$1" >&2; exit 2 ;;
+            printf 'error: unknown option: %s\n' "$1" >&2
+            printf 'try: %s --help\n' "$0" >&2
+            exit 2 ;;
     esac
 done
 
