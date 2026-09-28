@@ -6,3 +6,6 @@ logs/
 
 # Runtime lock directory
 *.lock/
+
+# Agents
+.workbuddy/

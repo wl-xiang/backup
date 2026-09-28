@@ -25,23 +25,39 @@ Usage:
   ./backup.sh [OPTIONS]
 
 Modes (mutually exclusive; default when no mode option is given is backup):
-  (none)                 Run a backup of SRC_DIR.
-  --restore-latest       Restore the latest backup archive into SRC_DIR.
+  (none)                 Run a backup of SOURCE_DIR.
+  --restore-latest       Restore the latest backup archive into SOURCE_DIR.
 
 Options:
-  --target-dir DIR       Override SRC_DIR for this run (applies to both modes).
+  --target-dir DIR       Override SOURCE_DIR for this run (applies to both modes).
                          A relative DIR resolves against the current working
                          directory.
   -h, --help             Show this help and exit.
 
 Configuration (system env > .env file > built-in defaults):
-  STOP_CMD        Command to stop the service before backup/restore.  (required)
-  START_CMD       Command to start the service after backup/restore.  (required)
-  SRC_DIR         Directory to back up / restore into.                (required)
+  STOP_COMMAND    Command to stop the service before backup/restore.  (required)
+  START_COMMAND   Command to start the service after backup/restore.  (required)
+  SOURCE_DIR      Directory to back up / restore into.                (required)
   BACKUP_DIR      Directory where archives are written.               (required)
+  PRE_BACKUP_COMMAND   Pre-backup hook: runs after the lock, before
+                       the service stop (e.g. database dump).         (optional)
+  PRE_BACKUP_COMMAND_1..10   Extra numbered pre-backup hooks, executed
+                       in ascending order after PRE_BACKUP_COMMAND;
+                       empty entries are skipped.                     (optional)
+  POST_BACKUP_COMMAND  Post-backup hook: runs after the service
+                       start, before the rolling cleanup.             (optional)
+  POST_BACKUP_COMMAND_1..10  Extra numbered post-backup hooks, same
+                       rules as the numbered pre-backup hooks.        (optional)
   MAX_BACKUPS     Newest N archives and logs to keep. Default: 30
   BACKUP_PREFIX   Prefix for archive / log file names. Default: app
   LOG_DIR         Directory for logs and the run lock. Default: ./logs/
+
+Notes:
+  Deprecated short-name aliases are still accepted: STOP_CMD, START_CMD,
+  SRC_DIR (full names win when both are set).
+  Hooks apply to backup mode only; a hook failure is logged as a warning
+  and never aborts the backup. Each hook supports one unnumbered command
+  plus up to 10 numbered commands (_1 .. _10), executed in that order.
 
 Files:
   .env                                                   Optional, next to this script
@@ -90,8 +106,16 @@ done
 # Resolve this script's directory (used to locate .env and to anchor relative paths)
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
-# Registry of all recognized configuration variables
-CONFIG_VARS="STOP_CMD SRC_DIR BACKUP_DIR START_CMD MAX_BACKUPS BACKUP_PREFIX LOG_DIR"
+# Registry of all recognized configuration variables. Short names are kept
+# only as deprecated aliases of the full names (see alias resolution below).
+CONFIG_VARS="STOP_COMMAND STOP_CMD START_COMMAND START_CMD SOURCE_DIR SRC_DIR BACKUP_DIR MAX_BACKUPS BACKUP_PREFIX LOG_DIR PRE_BACKUP_COMMAND PRE_BACKUP_CMD POST_BACKUP_COMMAND POST_BACKUP_CMD"
+
+# Numbered hook slots (1..10) share the same config priority rules as the
+# base variables, so they are appended to the registry as well.
+for _n in 1 2 3 4 5 6 7 8 9 10; do
+    CONFIG_VARS="$CONFIG_VARS PRE_BACKUP_COMMAND_${_n} POST_BACKUP_COMMAND_${_n}"
+done
+unset _n
 
 # Snapshot system environment (highest priority) before sourcing .env, so that
 # runtime env vars are never overwritten by the .env file.
@@ -125,18 +149,27 @@ unset _v
 : "${BACKUP_PREFIX:=app}"
 : "${LOG_DIR:=./logs/}"
 
-# --target-dir overrides SRC_DIR (highest priority, applies to both modes).
+# Backward-compatible aliases: deprecated short names still work, but a full
+# name always wins when both are set. Aliases are cleared after resolution.
+if [ -z "${STOP_COMMAND:-}" ]; then STOP_COMMAND="${STOP_CMD:-}"; fi
+if [ -z "${START_COMMAND:-}" ]; then START_COMMAND="${START_CMD:-}"; fi
+if [ -z "${SOURCE_DIR:-}" ]; then SOURCE_DIR="${SRC_DIR:-}"; fi
+if [ -z "${PRE_BACKUP_COMMAND:-}" ]; then PRE_BACKUP_COMMAND="${PRE_BACKUP_CMD:-}"; fi
+if [ -z "${POST_BACKUP_COMMAND:-}" ]; then POST_BACKUP_COMMAND="${POST_BACKUP_CMD:-}"; fi
+unset STOP_CMD START_CMD SRC_DIR PRE_BACKUP_CMD POST_BACKUP_CMD
+
+# --target-dir overrides SOURCE_DIR (highest priority, applies to both modes).
 # Relative CLI paths resolve against the current working directory (intuitive
 # when typed interactively).
 if [ -n "$TARGET_DIR" ]; then
     case "$TARGET_DIR" in
-        /*) SRC_DIR="$TARGET_DIR" ;;
-        *)  SRC_DIR="$(pwd)/$TARGET_DIR" ;;
+        /*) SOURCE_DIR="$TARGET_DIR" ;;
+        *)  SOURCE_DIR="$(pwd)/$TARGET_DIR" ;;
     esac
 fi
 
 # Resolve config-relative paths against the script directory so that cron /
-# different CWDs cannot silently redirect SRC_DIR, BACKUP_DIR, or LOG_DIR.
+# different CWDs cannot silently redirect SOURCE_DIR, BACKUP_DIR, or LOG_DIR.
 resolve_config_path() {
     case "$1" in
         '')  printf '' ;;
@@ -150,7 +183,7 @@ resolve_config_path() {
             ;;
     esac
 }
-[ -n "${SRC_DIR:-}" ]    && SRC_DIR=$(resolve_config_path "$SRC_DIR")
+[ -n "${SOURCE_DIR:-}" ]    && SOURCE_DIR=$(resolve_config_path "$SOURCE_DIR")
 [ -n "${BACKUP_DIR:-}" ] && BACKUP_DIR=$(resolve_config_path "$BACKUP_DIR")
 [ -n "${LOG_DIR:-}" ]    && LOG_DIR=$(resolve_config_path "$LOG_DIR")
 
@@ -163,8 +196,8 @@ strip_trailing_slashes() {
     done
     printf '%s' "$_st"
 }
-if [ -n "${SRC_DIR:-}" ]; then
-    SRC_DIR=$(strip_trailing_slashes "$SRC_DIR")
+if [ -n "${SOURCE_DIR:-}" ]; then
+    SOURCE_DIR=$(strip_trailing_slashes "$SOURCE_DIR")
 fi
 if [ -n "${BACKUP_DIR:-}" ]; then
     BACKUP_DIR=$(strip_trailing_slashes "$BACKUP_DIR")
@@ -192,6 +225,46 @@ _log() {
 log_info()  { _log INFO  "$@"; }
 log_warn()  { _log WARN  "$@"; }
 log_error() { _log ERROR "$@"; }
+
+# Run a user hook command in a subshell (isolated: the hook cannot modify
+# script state, and an `exit` inside it only ends the hook). The hook's own
+# output is appended to the current log file (or discarded when no log file
+# exists yet). A non-zero exit code is logged as a warning and never aborts
+# the backup. An empty command is a no-op. Args: 1=hook name  2=command
+run_hook() {
+    _hk_name="$1"; _hk_cmd="$2"
+    [ -n "$_hk_cmd" ] || return 0
+    log_info "running hook ${_hk_name}: ${_hk_cmd}"
+    if [ -n "${LOG_FILE:-}" ] && [ -f "$LOG_FILE" ]; then
+        ( eval "$_hk_cmd" ) >>"$LOG_FILE" 2>&1
+    else
+        ( eval "$_hk_cmd" ) >/dev/null 2>&1
+    fi
+    _hk_rc=$?
+    if [ "$_hk_rc" -ne 0 ]; then
+        log_warn "hook ${_hk_name} failed (exit code: ${_hk_rc}); continuing"
+    fi
+    unset _hk_name _hk_cmd _hk_rc
+    return 0
+}
+
+# Run a chain of hook commands: the base (unnumbered) variable first, then
+# the numbered variants _1 .. _10 in ascending order. Empty or unset entries
+# are skipped and do NOT stop the chain. Each entry is executed through
+# run_hook (isolated subshell, failures are warnings). Args:
+#   1=chain label (e.g. PRE_BACKUP)  2=base variable name (e.g. PRE_BACKUP_COMMAND)
+run_hook_chain() {
+    _hc_label="$1"; _hc_base="$2"; _hc_n=1
+    eval "_hc_cmd=\${${_hc_base}:-}"
+    run_hook "$_hc_label" "$_hc_cmd"
+    while [ "$_hc_n" -le 10 ]; do
+        eval "_hc_cmd=\${${_hc_base}_${_hc_n}:-}"
+        run_hook "${_hc_label}_${_hc_n}" "$_hc_cmd"
+        _hc_n=$((_hc_n + 1))
+    done
+    unset _hc_label _hc_base _hc_cmd _hc_n
+    return 0
+}
 
 # Rolling cleanup: keep the newest N files matching a pattern in a directory.
 # Args: 1=directory  2=glob pattern  3=keep count
@@ -263,10 +336,10 @@ STOP_ATTEMPTED=0
 ensure_service_started() {
     [ "$START_ATTEMPTED" -eq 1 ] && return 0
     [ "${STOP_ATTEMPTED:-0}" -eq 0 ] && return 0
-    [ -z "${START_CMD:-}" ] && return 0
+    [ -z "${START_COMMAND:-}" ] && return 0
     START_ATTEMPTED=1
-    log_info "starting service: $START_CMD"
-    eval "$START_CMD" >/dev/null 2>&1
+    log_info "starting service: $START_COMMAND"
+    eval "$START_COMMAND" >/dev/null 2>&1
     _rc=$?
     if [ "$_rc" -ne 0 ]; then
         log_warn "start service failed (exit code: $_rc)"
@@ -284,9 +357,9 @@ trap 'exit 1' INT HUP TERM
 # Stop the service once; on failure try to start it again and abort.
 # Used by both backup and restore modes.
 stop_service() {
-    log_info "stopping service: $STOP_CMD"
+    log_info "stopping service: $STOP_COMMAND"
     STOP_ATTEMPTED=1
-    eval "$STOP_CMD" >/dev/null 2>&1
+    eval "$STOP_COMMAND" >/dev/null 2>&1
     _rc=$?
     if [ "$_rc" -ne 0 ]; then
         log_error "stop service failed (exit code: $_rc)"
@@ -304,7 +377,7 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     # ---- Restore mode: validation ------------------------------------------
     _missing=""
     [ -z "${BACKUP_DIR:-}" ]    && _missing="$_missing BACKUP_DIR"
-    [ -z "${SRC_DIR:-}" ]       && _missing="$_missing SRC_DIR"
+    [ -z "${SOURCE_DIR:-}" ]       && _missing="$_missing SOURCE_DIR"
     [ -z "${BACKUP_PREFIX:-}" ] && _missing="$_missing BACKUP_PREFIX"
     if [ -n "$_missing" ]; then
         printf '[%s] [ERROR] missing required config:%s\n' \
@@ -319,15 +392,15 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     fi
 
     # Safety guard: refuse to overwrite the root filesystem ("//", "///" ... too).
-    if [ "$SRC_DIR" = "/" ]; then
+    if [ "$SOURCE_DIR" = "/" ]; then
         printf '[%s] [ERROR] refusing to restore to root directory\n' \
             "$(date +%Y%m%d_%H%M%S)" >&2
         exit 1
     fi
 
     # Refuse stopping the service without a matching start command.
-    if [ -n "${STOP_CMD:-}" ] && [ -z "${START_CMD:-}" ]; then
-        printf '[%s] [ERROR] STOP_CMD is set but START_CMD is empty; refusing to stop without start\n' \
+    if [ -n "${STOP_COMMAND:-}" ] && [ -z "${START_COMMAND:-}" ]; then
+        printf '[%s] [ERROR] STOP_COMMAND is set but START_COMMAND is empty; refusing to stop without start\n' \
             "$(date +%Y%m%d_%H%M%S)" >&2
         exit 1
     fi
@@ -364,7 +437,7 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
 
     # Step 1: confirm restore and print the archive path
     printf 'Latest backup archive: %s\n' "$_latest"
-    printf 'Restore target:        %s\n' "$SRC_DIR"
+    printf 'Restore target:        %s\n' "$SOURCE_DIR"
     printf 'Proceed with restore? [y/yes to confirm, others to cancel]: '
     read _answer
     case "$_answer" in
@@ -388,18 +461,18 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     esac
 
     # Step 3: stop the service (when configured) so data is not swapped under a live process
-    if [ -n "${STOP_CMD:-}" ]; then
+    if [ -n "${STOP_COMMAND:-}" ]; then
         stop_service
     else
-        log_warn "STOP_CMD not set; restoring without stopping any service"
+        log_warn "STOP_COMMAND not set; restoring without stopping any service"
     fi
 
     # Step 4 (option 2): pre-restore safety snapshot of current data
     if [ "$_mode" -eq 2 ]; then
-        if [ -d "$SRC_DIR" ]; then
+        if [ -d "$SOURCE_DIR" ]; then
             _pre="$BACKUP_DIR/${BACKUP_PREFIX}_backup_before_restore.tar.gz"
             log_info "creating pre-restore backup: $_pre"
-            if ! tar -zcf "$_pre" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE"; then
+            if ! tar -zcf "$_pre" -C "$(dirname "$SOURCE_DIR")" "$(basename "$SOURCE_DIR")" 2>>"$LOG_FILE"; then
                 log_error "pre-restore backup failed"
                 exit 1
             fi
@@ -431,11 +504,11 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
 
     # Move current data aside (same-filesystem rename = atomic).
     _old_side=""
-    if [ -e "$SRC_DIR" ]; then
-        _old_side="${SRC_DIR}.pre_restore.$$"
+    if [ -e "$SOURCE_DIR" ]; then
+        _old_side="${SOURCE_DIR}.pre_restore.$$"
         rm -rf "$_old_side" 2>/dev/null || true
-        if ! mv "$SRC_DIR" "$_old_side" 2>>"$LOG_FILE"; then
-            log_error "failed to move existing data aside: $SRC_DIR"
+        if ! mv "$SOURCE_DIR" "$_old_side" 2>>"$LOG_FILE"; then
+            log_error "failed to move existing data aside: $SOURCE_DIR"
             rm -rf "$_tmp"
             exit 1
         fi
@@ -445,9 +518,9 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
     _rollback() {
         log_error "$1"
         if [ -n "${_old_side:-}" ] && [ -e "$_old_side" ]; then
-            rm -rf "$SRC_DIR" 2>/dev/null || true
-            if mv "$_old_side" "$SRC_DIR" 2>>"$LOG_FILE"; then
-                log_info "previous data restored to $SRC_DIR"
+            rm -rf "$SOURCE_DIR" 2>/dev/null || true
+            if mv "$_old_side" "$SOURCE_DIR" 2>>"$LOG_FILE"; then
+                log_info "previous data restored to $SOURCE_DIR"
             else
                 log_error "rollback failed; previous data left at: $_old_side"
             fi
@@ -457,32 +530,32 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
         exit 1
     }
 
-    mkdir -p "$(dirname "$SRC_DIR")" 2>/dev/null || true
+    mkdir -p "$(dirname "$SOURCE_DIR")" 2>/dev/null || true
 
     if [ "$_nentries" -eq 1 ]; then
         _top=$(ls -1A "$_tmp" 2>/dev/null | head -1)
         if [ -d "$_tmp/$_top" ]; then
             # Normal case (our own backups): archive root is the source dir basename.
-            if ! mv "$_tmp/$_top" "$SRC_DIR" 2>>"$LOG_FILE"; then
-                _rollback "failed to move restored data to $SRC_DIR"
+            if ! mv "$_tmp/$_top" "$SOURCE_DIR" 2>>"$LOG_FILE"; then
+                _rollback "failed to move restored data to $SOURCE_DIR"
             fi
         else
-            # Single non-directory entry: place it inside SRC_DIR.
-            mkdir -p "$SRC_DIR" 2>/dev/null || _rollback "cannot create $SRC_DIR"
-            if ! mv "$_tmp/$_top" "$SRC_DIR"/ 2>>"$LOG_FILE"; then
-                _rollback "failed to move restored entry into $SRC_DIR"
+            # Single non-directory entry: place it inside SOURCE_DIR.
+            mkdir -p "$SOURCE_DIR" 2>/dev/null || _rollback "cannot create $SOURCE_DIR"
+            if ! mv "$_tmp/$_top" "$SOURCE_DIR"/ 2>>"$LOG_FILE"; then
+                _rollback "failed to move restored entry into $SOURCE_DIR"
             fi
         fi
     else
-        # Multi-entry archive (foreign/partial): move every entry into SRC_DIR.
+        # Multi-entry archive (foreign/partial): move every entry into SOURCE_DIR.
         # Line-based read keeps spaces/special chars intact (no word-splitting).
-        mkdir -p "$SRC_DIR" 2>/dev/null || _rollback "cannot create $SRC_DIR"
+        mkdir -p "$SOURCE_DIR" 2>/dev/null || _rollback "cannot create $SOURCE_DIR"
         if ! ls -1A "$_tmp" > "$_entries_list" 2>/dev/null; then
             _rollback "failed to list archive entries"
         fi
         while IFS= read -r _top; do
             [ -n "$_top" ] || continue
-            if ! mv "$_tmp/$_top" "$SRC_DIR"/ 2>>"$LOG_FILE"; then
+            if ! mv "$_tmp/$_top" "$SOURCE_DIR"/ 2>>"$LOG_FILE"; then
                 _rollback "failed to move restored entry: $_top"
             fi
         done < "$_entries_list"
@@ -497,7 +570,7 @@ if [ "$RESTORE_MODE" -eq 1 ]; then
 
     log_info "restore completed successfully"
     log_info "restored from: $_latest"
-    log_info "restored to:   $SRC_DIR"
+    log_info "restored to:   $SOURCE_DIR"
     exit 0
 fi
 
@@ -506,10 +579,10 @@ fi
 # ----------------------------------------------------------------------------
 
 _missing=""
-[ -z "${STOP_CMD:-}" ]   && _missing="$_missing STOP_CMD"
-[ -z "${SRC_DIR:-}" ]    && _missing="$_missing SRC_DIR"
+[ -z "${STOP_COMMAND:-}" ]   && _missing="$_missing STOP_COMMAND"
+[ -z "${SOURCE_DIR:-}" ]    && _missing="$_missing SOURCE_DIR"
 [ -z "${BACKUP_DIR:-}" ] && _missing="$_missing BACKUP_DIR"
-[ -z "${START_CMD:-}" ]  && _missing="$_missing START_CMD"
+[ -z "${START_COMMAND:-}" ]  && _missing="$_missing START_COMMAND"
 if [ -n "$_missing" ]; then
     printf '[%s] [ERROR] missing required config:%s\n' \
         "$(date +%Y%m%d_%H%M%S)" "$_missing" >&2
@@ -528,9 +601,9 @@ if [ "$MAX_BACKUPS" -lt 1 ]; then
     exit 1
 fi
 
-if [ ! -d "$SRC_DIR" ]; then
+if [ ! -d "$SOURCE_DIR" ]; then
     printf '[%s] [ERROR] source directory does not exist: %s\n' \
-        "$(date +%Y%m%d_%H%M%S)" "$SRC_DIR" >&2
+        "$(date +%Y%m%d_%H%M%S)" "$SOURCE_DIR" >&2
     exit 1
 fi
 
@@ -553,13 +626,18 @@ LOG_FILE="$LOG_DIR/${BACKUP_PREFIX}_backup_${TIMESTAMP}.log"
 acquire_lock
 
 log_info "backup run started (timestamp: $TIMESTAMP)"
-log_info "source      : $SRC_DIR"
+log_info "source      : $SOURCE_DIR"
 log_info "archive     : $BACKUP_FILE"
 log_info "log         : $LOG_FILE"
 
+# Step 0: pre-backup hooks. Run BEFORE the service stop so that hooks which
+# need a live service (e.g. a database dump) still work.
+run_hook_chain PRE_BACKUP PRE_BACKUP_COMMAND
+
 # ----------------------------------------------------------------------------
 # Module 3: Main flow control
-#            (validate -> lock -> stop -> backup -> verify -> start -> cleanup)
+#            (validate -> lock -> pre-hook -> stop -> backup -> verify
+#             -> start -> post-hook -> cleanup)
 # ----------------------------------------------------------------------------
 
 # Step 1: stop service
@@ -569,7 +647,7 @@ stop_service
 # so the archive is portable and can be restored to any target path.
 log_info "creating archive..."
 _tar_rc=0
-tar -zcf "$BACKUP_FILE" -C "$(dirname "$SRC_DIR")" "$(basename "$SRC_DIR")" 2>>"$LOG_FILE" || _tar_rc=$?
+tar -zcf "$BACKUP_FILE" -C "$(dirname "$SOURCE_DIR")" "$(basename "$SOURCE_DIR")" 2>>"$LOG_FILE" || _tar_rc=$?
 if [ "$_tar_rc" -ne 0 ]; then
     # GNU tar can exit 1 on non-fatal warnings (sockets, changed files, ...).
     # Only discard the archive if it does not actually verify.
@@ -599,6 +677,10 @@ log_info "archive created and verified successfully"
 
 # Step 4: start service (failure here is a warning only; backup is already saved)
 ensure_service_started
+
+# Step 4b: post-backup hooks (final GC / cleanup). Run only after the archive
+# has been created and verified, and only in backup mode.
+run_hook_chain POST_BACKUP POST_BACKUP_COMMAND
 
 # Step 5: rolling cleanup (only after a successful backup)
 log_info "retention: keeping newest $MAX_BACKUPS archives/logs"
